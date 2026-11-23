@@ -1,0 +1,20 @@
+# 构建产物
+build/
+cmake-build-*/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# 日志
+*.log
+flash_log.txt
+
+# IDE
+.idea/
+.vscode/
+
+# 系统
+Thumbs.db
+.DS_Store
