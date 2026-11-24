@@ -35,6 +35,20 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+/* ---- 按键定义 ----
+ * 两个按键都接成"一端接引脚、一端接 GND"，引脚用内部上拉：
+ *   松开 = 高电平(1)，按下 = 低电平(0)
+ *
+ *   PA1 -> 角度 +15°
+ *   PA2 -> 角度 -15°
+ */
+#define KEY_PORT          GPIOA
+#define KEY_PIN_UP        GPIO_PIN_1     /* PA1：+15° */
+#define KEY_PIN_DOWN      GPIO_PIN_2     /* PA2：-15° */
+
+#define KEY_DEBOUNCE_MS   20             /* 消抖时间：电平要稳定 20ms 才算数 */
+#define ANGLE_STEP        15.0f          /* 每按一次改变的角度 */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,6 +64,25 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 uint32_t tick = 0;
+
+/* 自由累加的毫秒计数：在 TIM3 的 1ms 中断里 ++，不会归零。
+ * 用来做按键消抖和序列节拍，比 tick（0~499 循环）好用。 */
+static volatile uint32_t sysTickMs = 0;
+
+/* 一个按键的运行状态 */
+typedef struct
+{
+  uint16_t pin;      /* 引脚号 */
+  uint8_t  raw;      /* 上次采样到的原始电平（1=松开 0=按下） */
+  uint8_t  stable;   /* 消抖后确认的稳定电平 */
+  uint32_t rawMs;    /* 原始电平上一次变化的时刻，单位 ms */
+} Key_t;
+
+static Key_t keyUp   = { KEY_PIN_UP,   1, 1, 0 };
+static Key_t keyDown = { KEY_PIN_DOWN, 1, 1, 0 };
+
+static float   curAngle   = 90.0f;  /* 当前目标角度 */
+static uint8_t manualMode = 0;      /* 0 = 自动跑五角度序列，1 = 按键控制 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,6 +109,56 @@ int _write(int file, char *ptr, int len)
   (void)file;
   HAL_UART_Transmit(&huart1, (uint8_t *)ptr, (uint16_t)len, HAL_MAX_DELAY);
   return len;
+}
+
+/**
+ * @brief  按键扫描——"计时消抖"，不是"延时消抖"
+ * @param  k 按键状态结构体
+ * @retval 1 = 本次检测到一次"按下"（下降沿），0 = 无事件
+ *
+ * 为什么不用 HAL_Delay(20) 消抖：
+ *   延时消抖会把主循环卡住 20ms，舵机 PWM 不受影响（那是硬件输出），
+ *   但按键连续按、OLED 刷屏时会互相拖。这里改成看"电平稳定了多久"，
+ *   完全不阻塞，主循环该干嘛干嘛。
+ *
+ * 逻辑很朴素，三句话：
+ *   1. 电平一变，就记下"什么时刻变的"并重新开始计时；
+ *   2. 电平连续 20ms 没再变，才承认它是真的；
+ *   3. 承认下来的值是低电平，说明刚被按下 -> 返回 1。
+ */
+static uint8_t Key_Update(Key_t *k)
+{
+  uint8_t v = (HAL_GPIO_ReadPin(KEY_PORT, k->pin) == GPIO_PIN_RESET) ? 0 : 1;
+
+  if (v != k->raw)                       /* 还在抖：重新计时，先不认 */
+  {
+    k->raw   = v;
+    k->rawMs = sysTickMs;
+  }
+  else if ((sysTickMs - k->rawMs) >= KEY_DEBOUNCE_MS && v != k->stable)
+  {
+    k->stable = v;                       /* 稳定够久了，认下来 */
+    if (v == 0) return 1;                /* 是按下（下降沿）才算一次事件 */
+  }
+  return 0;
+}
+
+/**
+ * @brief  统一切角度：限幅 -> 驱动舵机 -> 刷新 OLED -> 打印串口
+ * @note   自动序列和手动按键都走这一个出口，省得两处代码各写一遍、后面改漏一头。
+ */
+static void ApplyAngle(float a)
+{
+  if (a < 0.0f)   a = 0.0f;              /* 限幅：不超出 0~180，否则顶机械限位 */
+  if (a > 180.0f) a = 180.0f;
+  curAngle = a;
+
+  Servo_SetAngle(a);
+
+  uint16_t ccr = Servo_AngleToCCR(a);
+  Servo_ShowOnOLED(a, ccr);
+  printf("Target:%3d deg  CCR=%4d  Pulse=%d.%03d ms\r\n",
+         (int)a, (int)ccr, (int)(ccr / 1000), (int)(ccr % 1000));
 }
 
 /* USER CODE END 0 */
@@ -141,7 +224,24 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+
+  /* ---- 按键 PA1 / PA2 初始化：输入 + 内部上拉 ----
+   * CubeMX 里也能配（GPIO_Input + Pull-up），这里手写有两个好处：
+   *   1. 不用重新 GENERATE CODE，也就不会把 .ld 里 5 处 READONLY 又改回来；
+   *   2. 引脚定义和代码放在一起，看代码就知道接哪。
+   * 上拉是"内部"的，所以按键另一端直接接 GND 就行，不用外接电阻。
+   */
+  {
+    GPIO_InitTypeDef g = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    g.Pin  = KEY_PIN_UP | KEY_PIN_DOWN;
+    g.Mode = GPIO_MODE_INPUT;
+    g.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(KEY_PORT, &g);
+  }
+
   OLED_Clear();
+  ApplyAngle(90.0f);          /* 开机先摆到中位，屏幕立刻有内容可看 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -151,15 +251,36 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    static const float angles[5] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f};
-    for (uint8_t i = 0; i < 5; i++)
+    static const float seq[5] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f};
+    static uint8_t  seqStep = 0;
+    static uint32_t seqMs   = 0;
+
+    /* ---- 第一段：自动演示 ----
+     * 每 1000ms 走一步五角度序列，这是作业要求的 5 个角度。
+     * 注意这里用 sysTickMs 比较，而不是 HAL_Delay(1000)：
+     * 延时会把主循环卡死，按键就按不灵了；用计时比较，1 秒内随时能响应按键。
+     */
+    if (!manualMode && (sysTickMs - seqMs) >= 1000)
     {
-      Servo_SetAngle(angles[i]);
-      Servo_ShowOnOLED(angles[i], Servo_AngleToCCR(angles[i]));
-      printf("angle=%3d  CCR=%4d  pulse=%d.%03d ms\r\n",
-             (int)angles[i], Servo_AngleToCCR(angles[i]),
-             Servo_AngleToCCR(angles[i]) / 1000, Servo_AngleToCCR(angles[i]) % 1000);
-      HAL_Delay(1000);
+      seqMs = sysTickMs;
+      ApplyAngle(seq[seqStep]);
+      seqStep = (uint8_t)((seqStep + 1) % 5);
+    }
+
+    /* ---- 第二段：按键 ----
+     * 只要按了任意一个键，就永久切到手动模式，之后不再自己乱动。
+     * 想回到自动演示，按一下板子的 RESET 即可。
+     */
+    if (Key_Update(&keyUp))               /* PA1：+15° */
+    {
+      manualMode = 1;
+      ApplyAngle(curAngle + ANGLE_STEP);
+    }
+
+    if (Key_Update(&keyDown))             /* PA2：-15° */
+    {
+      manualMode = 1;
+      ApplyAngle(curAngle - ANGLE_STEP);
     }
   }
   /* USER CODE END 3 */
@@ -367,6 +488,7 @@ static void MX_GPIO_Init(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM3) {
+    sysTickMs++;                          /* 自由累加的毫秒计数，给按键消抖和序列节拍用 */
     if (++tick >= 500) {
       tick = 0;
       HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
