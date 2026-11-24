@@ -140,6 +140,22 @@ openocd -f E:/Clion/CFJ_STM32/stm32f1.cfg \
 
 > 注意：**烧录不会自动编译**。改完代码必须先编译再烧，否则烧进去的还是旧 ELF。
 
+### 运行验证（串口日志）
+
+串口助手：`COM9 / 115200 / 8 / 1 / 无`，接收模式选**文本模式**（选 HEX 模式会显示成一串十六进制）。
+
+![串口输出](docs/serial-log.png)
+
+每 1 秒打印一行，角度与 CCR 严格对应第 3 节的映射表：
+
+```
+Target:  0 deg  CCR= 550  Pulse=0.550 ms
+Target: 45 deg  CCR=1025  Pulse=1.025 ms
+Target: 90 deg  CCR=1500  Pulse=1.500 ms
+Target:135 deg  CCR=1975  Pulse=1.975 ms
+Target:180 deg  CCR=2450  Pulse=2.450 ms
+```
+
 ---
 
 ## 6. 踩坑记录
@@ -199,6 +215,7 @@ servo_lab/
 │   ├── Inc/        main.h  Servo.h  OLED.h  OLED_Font.h  tim.h  gpio.h ...
 │   └── Src/        main.c  Servo.c  OLED.c  tim.c  gpio.c  usart  ...
 ├── Drivers/        CMSIS + HAL
+├── docs/           serial-log.png   串口运行截图
 ├── servo_lab.ioc   CubeMX 工程文件
 ├── CMakeLists.txt
 └── flash.bat       一键烧录脚本
