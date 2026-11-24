@@ -39,12 +39,16 @@
  * 两个按键都接成"一端接引脚、一端接 GND"，引脚用内部上拉：
  *   松开 = 高电平(1)，按下 = 低电平(0)
  *
- *   PA1 -> 角度 +15°
- *   PA2 -> 角度 -15°
+ *   PA12 -> 角度 +15°
+ *   PA11 -> 角度 -15°
+ *
+ * 这两个脚原本是 USB 的 D+ / D-，本工程不用 USB，所以可以当普通 IO 用。
+ * 但有一个硬前提：**板子上的 USB 口不能插线**。一旦插了 USB，
+ * PA11/PA12 就被 USB 收发器占住，按键会失效。
  */
 #define KEY_PORT          GPIOA
-#define KEY_PIN_UP        GPIO_PIN_1     /* PA1：+15° */
-#define KEY_PIN_DOWN      GPIO_PIN_2     /* PA2：-15° */
+#define KEY_PIN_UP        GPIO_PIN_12    /* PA12：+15° */
+#define KEY_PIN_DOWN      GPIO_PIN_11    /* PA11：-15° */
 
 #define KEY_DEBOUNCE_MS   20             /* 消抖时间：电平要稳定 20ms 才算数 */
 #define ANGLE_STEP        15.0f          /* 每按一次改变的角度 */
@@ -225,11 +229,14 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
 
-  /* ---- 按键 PA1 / PA2 初始化：输入 + 内部上拉 ----
+  /* ---- 按键 PA11 / PA12 初始化：输入 + 内部上拉 ----
    * CubeMX 里也能配（GPIO_Input + Pull-up），这里手写有两个好处：
    *   1. 不用重新 GENERATE CODE，也就不会把 .ld 里 5 处 READONLY 又改回来；
    *   2. 引脚定义和代码放在一起，看代码就知道接哪。
    * 上拉是"内部"的，所以按键另一端直接接 GND 就行，不用外接电阻。
+   *
+   * 注意：PA11/PA12 是 USB 的 D-/D+。板子上 USB 口空着时它们是普通 IO；
+   *       如果插上 USB 线，这两个脚会被 USB 外设占用，按键就不灵了。
    */
   {
     GPIO_InitTypeDef g = {0};
@@ -271,13 +278,13 @@ int main(void)
      * 只要按了任意一个键，就永久切到手动模式，之后不再自己乱动。
      * 想回到自动演示，按一下板子的 RESET 即可。
      */
-    if (Key_Update(&keyUp))               /* PA1：+15° */
+    if (Key_Update(&keyUp))               /* PA12：+15° */
     {
       manualMode = 1;
       ApplyAngle(curAngle + ANGLE_STEP);
     }
 
-    if (Key_Update(&keyDown))             /* PA2：-15° */
+    if (Key_Update(&keyDown))             /* PA11：-15° */
     {
       manualMode = 1;
       ApplyAngle(curAngle - ANGLE_STEP);
